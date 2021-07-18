@@ -6,6 +6,7 @@ from encoder import audio
 from pathlib import Path
 from tqdm import tqdm
 import numpy as np
+import pandas as pd
 
 
 class DatasetLog:
@@ -173,3 +174,68 @@ def preprocess_voxceleb2(datasets_root: Path, out_dir: Path, skip_existing=False
     speaker_dirs = list(dataset_root.joinpath("dev", "aac").glob("*"))
     _preprocess_speaker_dirs(speaker_dirs, dataset_name, datasets_root, out_dir, "m4a",
                              skip_existing, logger)
+
+
+def preprocess_cvzh(datasets_root: Path, out_dir: Path, skip_existing=False):
+    dataset_name = "cv-corpus-6.1-2020-12-11/zh-CN"
+    dataset_root, logger = _init_preprocess_dataset(dataset_name, datasets_root, out_dir)
+    if not dataset_root:
+        return
+
+    table = pd.read_csv(dataset_root.joinpath("train.tsv"), sep='\t')
+    speaker_names = set(table["client_id"])
+
+    # Function to preprocess utterances for one speaker
+    def preprocess_speaker(speaker_name: str):
+        # Give a name to the speaker that includes its dataset
+        # speaker_name = "_".join(speaker_dir.relative_to(datasets_root).parts)
+
+        # Create an output directory with that name, as well as a txt file containing a 
+        # reference to each source file.
+        speaker_out_dir = out_dir.joinpath(speaker_name)
+        speaker_out_dir.mkdir(exist_ok=True)
+        sources_fpath = speaker_out_dir.joinpath("_sources.txt")
+
+        # There's a possibility that the preprocessing was interrupted earlier, check if 
+        # there already is a sources file.
+        if sources_fpath.exists():
+            try:
+                with sources_fpath.open("r") as sources_file:
+                    existing_fnames = {line.split(",")[0] for line in sources_file}
+            except:
+                existing_fnames = {}
+        else:
+            existing_fnames = {}
+
+        # Gather all audio files for that speaker recursively
+        sources_file = sources_fpath.open("a" if skip_existing else "w")
+        for row in table[table["client_id"] == speaker_name].iterrows():
+            in_fpath = dataset_root.joinpath("clips", row["path"])
+            # Check if the target output file already exists
+            out_fname = in_fpath.replace(".mp3", ".npy")
+            if skip_existing and out_fname in existing_fnames:
+                continue
+
+            # Load and preprocess the waveform
+            wav = audio.preprocess_wav(in_fpath)
+            if len(wav) == 0:
+                continue
+
+            # Create the mel spectrogram, discard those that are too short
+            frames = audio.wav_to_mel_spectrogram(wav)
+            if len(frames) < partials_n_frames:
+                continue
+
+            out_fpath = speaker_out_dir.joinpath(out_fname)
+            np.save(out_fpath, frames)
+            logger.add_sample(duration=len(wav) / sampling_rate)
+            sources_file.write("%s,%s\n" % (out_fname, in_fpath))
+
+        sources_file.close()
+
+    # Process the utterances for each speaker
+    with ThreadPool(8) as pool:
+        list(tqdm(pool.imap(preprocess_speaker, speaker_names), dataset_name, len(speaker_names),
+                  unit="speakers"))
+    logger.finalize()
+    print("Done preprocessing %s.\n" % dataset_name)
