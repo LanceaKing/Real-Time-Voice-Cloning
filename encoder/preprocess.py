@@ -7,6 +7,7 @@ from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
+import concurrent.futures
 
 
 class DatasetLog:
@@ -209,10 +210,10 @@ def preprocess_cvzh(datasets_root: Path, out_dir: Path, skip_existing=False):
 
         # Gather all audio files for that speaker recursively
         sources_file = sources_fpath.open("a" if skip_existing else "w")
-        for row in table[table["client_id"] == speaker_name].iterrows():
+        for i, row in table[table["client_id"] == speaker_name].iterrows():
             in_fpath = dataset_root.joinpath("clips", row["path"])
             # Check if the target output file already exists
-            out_fname = in_fpath.replace(".mp3", ".npy")
+            out_fname = in_fpath.with_suffix(".npy").name
             if skip_existing and out_fname in existing_fnames:
                 continue
 
@@ -233,9 +234,15 @@ def preprocess_cvzh(datasets_root: Path, out_dir: Path, skip_existing=False):
 
         sources_file.close()
 
+    import warnings
+    warnings.filterwarnings("ignore")
+    list(tqdm(map(preprocess_speaker, speaker_names), dataset_name, len(speaker_names),
+              unit="speakers"))
+#     for speaker_name in speaker_names:
+#         preprocess_speaker(speaker_name)
     # Process the utterances for each speaker
-    with ThreadPool(8) as pool:
-        list(tqdm(pool.imap(preprocess_speaker, speaker_names), dataset_name, len(speaker_names),
-                  unit="speakers"))
+#     with ThreadPool(8) as pool:
+#         list(tqdm(pool.imap(preprocess_speaker, speaker_names), dataset_name, len(speaker_names),
+#                   unit="speakers"))
     logger.finalize()
     print("Done preprocessing %s.\n" % dataset_name)
